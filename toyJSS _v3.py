@@ -62,12 +62,13 @@ the length of time from the earliest start time of the jobs to the latest end ti
 # row = sequence of machines for job j; if 2 entries are 0, then job needs only 1 machine, 
 #                                       if no entries are 0, then the job needs a sequence of 3 machines 
 sequence_data = cpm_array([
-    [2,0,0], 
-    [1,3,2],
-    [2,3,0],
-    [2,0,0],
-    [1,3,0]
+    [1,-1,-1], 
+    [0,2,1],
+    [1,2,-1],
+    [2,-1,-1],
+    [0,2,-1]
     ])
+flat_sequence_data = sequence_data.flatten()
 
 #parts_data: vector with J elements == number of jobs; entries are the number of parts to be produced in job j
 parts_data = cpm_array([
@@ -78,19 +79,21 @@ parts_data = cpm_array([
     5
     ])
 
+
+
 #operator_data: tensor dim operator x machines x level type = 3 x 3 x 2
 # operator_data = cpm_array([
 #     [[2,3],[2,1],[2,3]], #operator 1: for machine 1 --> knowledge level 2, preference level 3; for machine 2 --> knw 2, pref 1 , ...
 #     [[3,2],[1,3],[1,2]], #operator 2: ...
 #     [[1,1],[2,3],[3,1]], #operator 3: ...
 #     ])
-operator_knowl = [[2,2,2], 
+operator_knowl = cpm_array([[2,2,2], 
                   [3,1,1],
-                  [1,2,3]]
+                  [1,2,3]])
 
-operator_pref = [[3,1,3],
+operator_pref = cpm_array([[3,1,3],
                  [2,3,2],
-                 [1,3,1]]
+                 [1,3,1]])
 
 #machining_data: matrix M x E with M number of machines, E levels of experience; entries are the average time spent (per unit) per knowledge level (cols) 
 machining_data = cpm_array([
@@ -98,16 +101,6 @@ machining_data = cpm_array([
     [6,8,10],
     [2,6,10]
     ])
-
-"""
-#unit_data: vector M --> entries are the unit (number of parts) for which the average execution times are given in machining_data
-# REDUNDANT if unit == 1
-unit_data = cpm_array([
-    1,
-    1,
-    1])
-"""
-
 """----------------------------------------------------------------------------
 some preprocessing
 """
@@ -123,44 +116,39 @@ range_operators = range(operators_count)
 #what is the maximum sequence of machines
 max_sequence = np.shape(sequence_data)[1]
 
-#tasks2machines: a vector with length T i.e. the number of tasks to be executed in total.
-# the task ID is the corresponding index in the vector
-# the entry is the machine ID for the task
-machine2task = [] #vector, contains required machine for task with ID i
-for i in range(0,len(parts_data)):
-    this_part = sequence_data[i,:]
-    nonzero = np.where(this_part > 0)
-    this_part = this_part[nonzero]
-    for j in range(parts_data[i]):
-        machine2task = np.append(machine2task,this_part)
-#number tasks that need to be executed
-Ntasks = sum(tasks2machines)
-#indeces of sorted machines
-sortedIdx_m2t = np.argsort(machine2task)
-
-  
-"""  
 #how many parts should be processed on each machine?
-parts_per_machine = cpm_array(np.zeros([1,machines_count]))
-for m in range(1,machines_count+1):
-    #find indeces of jobs where machine is needed
-    jidx = np.where(sequence_data == m)[0]
-    #count the parts
-    if len(jidx) > 0:
-       parts_per_machine[0,m-1] = sum(parts_data[jidx]) 
-"""
-    
-#whatis the upper bound ub of the make span? Therefore: take max make time (lowest knowledge level) times number of parts
-ub_makespan = parts_per_machine * machine_data[:,-1]
+binary_sequence = sequence_data
+idx = np.where(sequence_data < 0)
+idx2 = np.where(sequence_data >= 0)
+binary_sequence[idx] = 0
+binary_sequence[idx2] = 1
 
-#introduce a scaling factor for the ub of the makespan.
-#why? Actual problem has a max makespan of 10 days; this toy example does not have a max makespan
-#the scaling factor allows to study the influence of the max makespan on the solution
-ub_scaler = 0.75    
-max_makespan = int(ub_scaler * ub_makespan)
 
-# How many parts should be produced by the same operator on the same machine (minimum)
-lb_partspan = 1  
+parts_matrix = binary_sequence*parts_data
+max_makespan = 0
+for m in range(machines_count):
+    idx = np.where(sequence_data == m)
+    max_makespan += sum(parts_matrix[idx] * machining_data[m])
+
+sum_of_tasks = 0
+for i in range(np.shape(parts_matrix)[0]):
+    for j in range(np.shape(parts_matrix)[1]):
+        sum_of_tasks += parts_matrix[i][j]
+range_tasks = range(sum_of_tasks)
+
+#machine to task
+flow_machine2task = -1*np.ones(sum_of_tasks)
+idxS = 0
+idxE = 0
+for i in range(0,len(parts_matrix.flatten())):
+    if parts_matrix.flatten()[i] != 0:
+       idxS = idxE
+       idxE += parts_matrix.flatten()[i]
+       flow_machine2task[idxS:idxE] = flat_sequence_data[i]
+            
+flow_machine2task = cpm_array(flow_machine2task)    
+
+
 
 """----------------------------------------------------------------------------
 ##-decision variables
@@ -168,109 +156,160 @@ lb_partspan = 1
 #here: keep track of each part
 #we need a start-time for each part
 #start times can overlap, as they link to different machines
-start_time_task = intvar(0, max_makespan, shape=(1,sum_of_tasks))
-end_time_task = intvar(0, max_makespan, shape=(1,sum_of_tasks))
+# start_time_task = intvar(0, ub_makespan, shape=(1,sum_of_tasks))
+# end_time_task = intvar(0, ub_makespan, shape=(1,sum_of_tasks))
+# #flow_parts2machines to know which machine is used to exe a task
+# flow_tasks2machines = intvar(1, range_machines[-1], shape=(1,sum_of_tasks))
+# #flow_parts2operators to know which operator is working on a task
+# flow_operators2tasks = intvar(1, range_operators[-1], shape=(1,sum_of_tasks))
+# #derive which operator is working on which machine
+# #expertise level and preference level can be derived once operator ID is known
+# vec_knowledge = intvar(1,4,shape=(1,sum_of_tasks))
+# vec_preference = intvar(1,4,shape=(1,sum_of_tasks))
 
-#flow_parts2machines to know which machine is used to exe a task
-flow_tasks2machines = machine2task #intvar(1, range_machines, shape=(1,sum_of_tasks))
-#flow_parts2operators to know which operator is working on a task
-flow_operators2tasks = intvar(1, range_operators, shape=(1,sum_of_tasks))
-#derive which operator is working on which machine
-#expertise level and preference level can be derived once operator ID is known
+
+start_time = intvar(0, int(max_makespan), shape=(sum_of_tasks), name="start")
+end_time = intvar(0, int(max_makespan), shape=(sum_of_tasks), name="stop")
+
+#flow_machine2task = intvar(0, range_machines[-1], shape=(sum_of_tasks))
+flow_operator2task = intvar(0, range_operators[-1], shape=(sum_of_tasks))
+
+knowledge = intvar(1,3,shape=(sum_of_tasks))
+preference = intvar(1,3,shape=(sum_of_tasks))
+execution_time = intvar(2,20,shape=(sum_of_tasks))
+
 
 """----------------------------------------------------------------------------
 ##-tuning parameters
 """
 ub_ergo = 3
-lb_allocation4operator = .7
+lb_allocation4operator = int(round(0.7 * sum_of_tasks/operators_count))
+ub_allocation4operator = int(round(1.2 * sum_of_tasks/operators_count))
+ub_dur = 100
 weight_preference = 1
 weight_expertlevel = 1
+batch_size = 5
+#introduce a scaling factor for the ub of the makespan.
+#why? Actual problem has a max makespan of 10 days; this toy example does not have a max makespan
+#the scaling factor allows to study the influence of the max makespan on the solution
+ub_scaler = 0.5    
+ub_makespan = int(ub_scaler * max_makespan)
+ub_workscheme = 100
 """----------------------------------------------------------------------------
 ##-modelling
 """
+from itertools import combinations, combinations_with_replacement
+from cpmpy import *
+from enum import Enum
+from functools import total_ordering
+
 model = Model()
 
 ###Constraints:
 
-###START AND END CONDITION    
-#condition on start time
-model += (min(start_time_task) == 0)
-#condition on end time     ===> is this usefull???
-model += (max(end_time_task) <= max_makespan)
+#the first task should start at timestep == 0
+model += (min(start_time) == 0)
 
-###SEQUENCE OF TASKS
-## 1/ task allocation to machines should be correct.
-# this is INPUT
+#the last task should end before the max makespan
+model += (max(end_time) <= ub_makespan)
 
-## 2/ respect the sequence of the tasks (on the level of a part)
-#if the first task is part of a sequence, then the second task can only start after the first task
-model += [((machine2task[i] != machine2task[i+1] for i in range(1)) & (parts_data[0] > 1)).implies \
-              (start_time_task[i+1] > end_time_task[i])]
-#if the last task is part of a sequence, then the second task can only start after the first task
-model += [((machine2task[i] != machine2task[i-1] for i in range(Ntasks-2,Ntasks)) & (parts_data[-1] > 1)).implies \
-              (start_time_task[i] > end_time_task[i-1])]             
-#if a task is part of a sequence, it cannot start before the previous task of the sequence and the next task of the sequence cannot
-#start before the current task has finished: 
-#MID of SEQUENCE
-model += [(((machine2task[i] != machine2task[i+1]) & (machine2task[i] != machine2task[i-1]) for i in range(1,Ntasks-1))).implies \
-            ((start_time_task[i+1] > end_time_task[i]) & (start_time_task[i] > end_time_task[i-1]))]
-#START of SEQUENCE    
-model += [(((machine2task[i] != machine2task[i+1]) for i in range(0,Ntasks-1))).implies \
-            ((start_time_task[i+1] > end_time_task[i]))]
-#END of SEQUENCE
-model += [(((machine2task[i] != machine2task[i-1]) for i in range(1,Ntasks))).implies \
-            ((start_time_task[i] > end_time_task[i-1]))]
+# the end time of a task equals the start time + execution time
+# exetime depends on (operator, machine and knowledge level of the operator for the machine)
+for i in range_tasks:
+    model += (start_time[i] + execution_time[i] == end_time[i])
+    for m in range_machines:
+        for o in range(0,np.shape(operator_pref)[0]):
+            model += (((flow_machine2task[i] == m) & (flow_operator2task[i] == o)).implies(preference[i] == operator_pref[o,m]))
+            model += (((flow_machine2task[i] == m) & (flow_operator2task[i] == o)).implies(knowledge[i] == operator_knowl[o,m]))
+            model += (((flow_machine2task[i] == m) & (flow_operator2task[i] == o) & (knowledge[i] == operator_knowl[o,m])).implies(
+                (execution_time[i] == machining_data[m,(operator_knowl[o,m]-1)])))
+            
+#each operator should be allocated to a min and max set of tasks
+for o in range_operators:
+    model += (sum([flow_operator2task[i] == o for i in range_tasks]) >= lb_allocation4operator)
+    model += (sum([flow_operator2task[i] == o for i in range_tasks]) <= ub_allocation4operator)
+    
+goal_knowl = weight_expertlevel * sum(knowledge)
+goal_pref = weight_preference * sum(preference)
+model.minimize(-goal_knowl-goal_pref)
+print('================SOLVING CP====================')
+val = model.solve()    
 
+print('#######################################################################################################')
+print('Script was validated up to here: PLEASE NOTE THAT CONSTRAINT SET IS INCOMPLETE')
+print('#######################################################################################################')
 
-###ALLOCATION OF OPERATORS
-#an operator cannot be allocated to +1 task simultanuously
-model += [(flow_operators2tasks[i] == flow_operators2tasks[j]) for i in range(0,Ntasks) for j in range(0,Ntasks).implies \
-          ( (start_time_task[i] > end_time_task[j]) | (start_time_task[j] > end_time_task[i]))]
-
-###DURATION OF A TASK
-##production of part >> start of task + duration of task = end of task
-#derive the execution time 
-this_knowl = operator_knowl[flow_operators2tasks[i]][flow_tasks2machines[i]]
-this_exetime = machining_data[flow_operators2tasks[i],this_knowl]
-#The estimated end time of a task equals the start time of the task and the estimated execution time of the task
-model += [(start_time_task[i] + this_exetime == end_time_part[i] for i in range(sum_of_tasks))]
-
-### MIMIC ERGO CONSTRAINT
-## 1 operator is allowed to work for 3 consequetive tasks on the same machine
-#the operator working on a machine for task i, can be the same operator working on  task i+ub_ergo
-#but then either the operator is not working on the same machine
-#or the operator has in between between working on at least 1 different machine.
-"""ub_ergo = 3"""
-#derive the execution time 
-this_knowl = operator_knowl[flow_operators2tasks[i]][flow_tasks2machines[i]]
-this_exetime = machining_data[flow_operators2tasks[i],this_knowl]
-model += [flow_operators2tasks[i] for i in range(0,Ntasks).implies \
-          ((end_time_task[j] != (ub_ergo * this_exetime) + starttime[k]) & \
-           (flow_operators2tasks[j] == flow_operators2tasks[k]) & \
-           (flow_operators2tasks[k] == flow_operators2tasks[i])) for j in range(0,Ntasks) for k in range(0,Ntasks)    
-        ]
+"""
+for m in range_machines:
+    for i1,i2 in combinations(range_tasks, 2):
+        # model += (((flow_machine2task[i1] == m) & (flow_machine2task[i2] == m)).implies(
+        #             Xor([(end_time[i1] <= start_time[i2]),(end_time[i2] <= start_time[i1])])))
+        if (flow_machine2task[i1] == m) & (flow_machine2task[i2] == m):
+            model += (Xor([(end_time[i1] <= start_time[i2]),(end_time[i2] <= start_time[i1])]))
 
 
-### MAKESPANE < DESIRED MAX MAKESPAN
-makespan = max(end_time_machine)
-model += (makespan <= max_makespan)
+goal_knowl = weight_expertlevel * sum(knowledge)
+goal_pref = weight_preference * sum(preference)
+model.minimize(-goal_knowl-goal_pref)
+#model.minimize(-goal_knowl)
+print('================SOLVING CP====================')
+val = model.solve()
+     
 
-### AN OPERATOR SHOULD BE AT LEAST ALLOCATED ON A MINIMUM OF TASKS
-## here modelled as 0.7 * (no of tasks/no of operators)
-"""lb_allocation4operator = .7"""
-for i in range_operators:
-    model += [np.count_nonzero(flow_operators2tasks == i+1) >= (lb_allocation4operator * Ntasks/operators_count)]
+# for i1, i2, i3, i4 in combinations(range_tasks,4):
+# # ERGO constraint (simulation): An operator cannot execute more than X tasks on a row on the same machine    
+#     model += ((flow_operator2task[i1] == flow_operator2task[i4]).implies(
+#              ((flow_machine2task[i1] != flow_machine2task[i2]) |
+#              (flow_machine2task[i1] != flow_machine2task[i3]) |
+#              (flow_machine2task[i2] != flow_machine2task[i3])))) 
+# #reversed ERGO constraint: if operators are the same for 2 tasks, then the times should not equal (start+exe)*4 or the machines should be different
+#     model += ((flow_machine2task[i1] == flow_machine2task[i4]).implies(
+#              ((flow_operator2task[i1] != flow_operator2task[i2]) |
+#              (flow_operator2task[i1] != flow_operator2task[i3]) |
+#              (flow_operator2task[i2] != flow_operator2task[i3])))) 
 
+
+for o1,o2 in combinations(range_tasks,2):
+# an operator cannot work on different tasks at the same time
+    model += ((flow_operator2task[o1] == flow_operator2task[o2]).implies(
+            Xor([end_time[o1]  <= start_time[o2],end_time[o2] <= start_time[o1]])
+            ))
+
+
+
+
+#FIRST SEQUENCE: job 2, sequence 0-2-1, parts 10
+idxS1 = 0 #start index machine 1
+idxE1 = 0 #end index machine 1
+idxS2 = 0 #start index machine 2
+idxE2 = 0 #end index machine 2
+for r in range(0,len(parts_matrix[0,:]),1):
+    for c in range(1,len(parts_matrix[0,:]),1):
+        idxE1 += parts_matrix[r,c-1]
+        idxS1 += idxE1 - parts_matrix[r,c-1]
+        if parts_matrix[r,c] > 0: #then there is a sequence
+            idxS2 += idxE1
+            idxE2 += idxS2 + parts_matrix[r,c]
+            model += (start_time[idxS2:idxE2] >= end_time[idxS1:idxE1])
+            
+#makespan = max(end_time_task)
+# model.minimize(makespan)
+# model.solve()
+
+#prefered goal: 
 ### objective
+
+"""
+
+
 """weight_preference = 1
 weight_expertlevel = 1"""
 ##objective is to maximize the knowledge level and the preference level
-# therefore: link the levels to the operator+machine combination per task
-this_knowl = operator_knowl[flow_operators2tasks,flow_tasks2machines]
-this_pref = operator_pref [flow_operators2tasks,flow_tasks2machines]
-goal = weight_preference * np.sum(this_knowl) + weight_expertlevel * np.sum(this_pref) 
-#min goal == -max goal
-model.minimize(-goal)
+#goal_knowl = weight_expertlevel * sum(knowledge)
+#goal_pref = weight_preference * sum(preference)
+#model.minimize(-goal_knowl-goal_pref)
+print('================SOLVING CP====================')
+#val = model.solve()
 
 """
 #print(model.status())
